@@ -28,6 +28,8 @@ def extract_S1_entries(infile, outfile, outpath):
 
     # Defining Norwegian area of interest:
     norwegian_AOI_poly = "POLYGON((-29.307389598466298 55.7151475256469,34.51470787304025 55.7151475256469,34.51470787304025 83.54659771121828,-29.307389598466298 83.54659771121828,-29.307389598466298 55.7151475256469))"
+    norwegian_AOI_poly = "POLYGON((-125.0 50.0, -38.0 27.0, 40.0 25.0, 128.0 54.0, -125.0 50.0))"
+
     norwegian_AOI_wtk_polygon =  ogr.CreateGeometryFromWkt(norwegian_AOI_poly)
 
     infile_tree = ET.parse(infile)

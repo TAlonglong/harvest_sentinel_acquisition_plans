@@ -35,7 +35,7 @@ platform_name_tr = {'S1A': 'sentinel 1a',
                     'S1C': 'sentinel 1c',
                     'S1D': 'sentinel 1d'}
 
-pytroll_pass = 'pytroll_pass_test'
+pytroll_pass = 'pytroll_pass'
 
 add_sentinel_schedule = ("insert into {} (satellite_name, aos, los, schedule, pass_key ) "
                          "values (%s, %s, %s, %s, %s)".format(pytroll_pass))
@@ -68,6 +68,8 @@ def insert_into_db(orb):
     sentinel_schedule_id = 0
     if orb['Mode'] == 'EW' and orb['Polarisation'] == 'DH':
         sentinel_schedule_id = 24
+    elif orb['Mode'] == 'EW' and orb['Polarisation'] == 'DV':
+        sentinel_schedule_id = 27
     elif orb['Mode'] == 'IW' and orb['Polarisation'] == 'DH':
         sentinel_schedule_id = 25
     elif orb['Mode'] == 'IW' and orb['Polarisation'] == 'DV':
@@ -211,7 +213,7 @@ def parse_kml_file():
             for orb in all_passes[satid][orbit]:
                 aos = orb['ObservationTimeStart']
                 los = orb['ObservationTimeStop']
-                if (aos >= midnight and los < the_day_after_tomorrow):
+                if (aos >= tomorrow and los < the_day_after_tomorrow):
                     print("Start {}, end {}, Mode {}, pol {}, sat {}".format(orb['ObservationTimeStart'],
                                                                              orb['ObservationTimeStop'],
                                                                              orb['Mode'],

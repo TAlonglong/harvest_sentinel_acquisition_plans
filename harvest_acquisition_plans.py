@@ -24,6 +24,7 @@ from lxml import html
 import datetime
 import os
 import sys
+import argparse
 
 from extract_entries_S2 import extract_S2_entries # in-house developed method
 from extract_entries_S1 import extract_S1_entries
@@ -54,11 +55,22 @@ def kml_file_storage_and_extraction(satellite, file_url, output_filename, output
             print "Successful download and retreival of polygons from %s" % file_url
             return True
 
+parser = argparse.ArgumentParser()
+parser.add_argument('-o', '--output-dir',
+                    type=str,
+                    dest='output_dir',
+                    default=None,
+                    help="Directory to save to resulting files in.")
+args = parser.parse_args()
+
 # Setting some initial parameters for e.g. harvesting sites and storage path
 s1_url = 'https://sentinel.esa.int/web/sentinel/missions/sentinel-1/observation-scenario/acquisition-segments'
 s2_url = 'https://sentinel.esa.int/web/sentinel/missions/sentinel-2/acquisition-plans'
 url_kml_prefix = 'https://sentinel.esa.int'
 storage_path = str(os.getcwd() + '/')
+if args.output_dir:
+    # Trick to add a trailing path seperator
+    storage_path = os.path.join(args.output_dir, '')
 
 # Parsing URLs
 s1_tree = html.parse(ul2.urlopen(s1_url))

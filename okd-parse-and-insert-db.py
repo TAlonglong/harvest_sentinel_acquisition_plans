@@ -1,3 +1,28 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+# Copyright (c) 2019 Trygve Aspenes
+
+# Author(s):
+
+#   Trygve Aspenes <trygveas@met.no>
+
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+"""Parse harvested schedules from ESA"""
+
+import os
 from datetime import datetime, timedelta
 from lxml import etree
 import mysql.connector
@@ -16,6 +41,28 @@ add_sentinel_schedule = ("insert into {} (satellite_name, aos, los, schedule, pa
                          "values (%s, %s, %s, %s, %s)".format(pytroll_pass))
 
 
+def okd_db_config():
+    import yaml
+    filename = os.environ.get('OKD_PRIME_DB_HOST_FILE')
+    if not filename:
+        return None
+    try:
+        with open(filename, 'r') as stream:
+            try:
+                config = yaml.load(stream)
+                # import pprint
+                # print(type(config))
+                # pp = pprint.PrettyPrinter(indent=4)
+                # pp.pprint(config)
+            except yaml.YAMLError as exc:
+                print("Failed reading yaml config file: {} with: {}".format(filename, exc))
+                raise yaml.YAMLError
+    except IOError as ioe:
+        print("Failed to open file filename: {}".format(ioe))
+        return None
+    return config['okd-prime-db-host']
+
+
 def insert_into_db(orb):
     platform_name = orb['SatelliteId']
     sentinel_schedule_id = 0
@@ -29,9 +76,12 @@ def insert_into_db(orb):
         print("Unknown schedule. ", orb)
         return 0
 
+    aos = orb['ObservationTimeStart']
+    los = orb['ObservationTimeStop']
     md5_hash = hashlib.md5()
     md5_hash.update(('{}{}{}{}'.format(aos, los, platform_name, sentinel_schedule_id)).encode('utf-8'))
     print("Sentinel schedule: ", aos, los, platform_name_tr.get(platform_name.upper(), platform_name))
+    db_action = 0
 
     try:
         # Find the mid time of the pass. This will be used to compare to the mid_time from the
@@ -41,7 +91,7 @@ def insert_into_db(orb):
         mid_time = aos + (los - aos) / 2
 
         cnx = mysql.connector.connect(user='polarsat', password='lilla land',
-                                      host='satproc3',
+                                      host=okd_db_config(),
                                       database='orbits')
         schedule_check = cnx.cursor(dictionary=True)
 
@@ -56,7 +106,6 @@ def insert_into_db(orb):
 
         schedule_check.execute(mysql_search)
         schedules = schedule_check.fetchall()
-
         insert = True
         update = None
         if len(schedules) == 0:
@@ -82,6 +131,7 @@ def insert_into_db(orb):
             cnx.commit()
             print("Connected to and inserted into db.")
             cursor.close()
+            db_action = 1
         elif update:
             update_statement = ("update {} set satellite_name='{:s}', "
                                 "aos='{:s}', los='{:s}', "
@@ -99,8 +149,10 @@ def insert_into_db(orb):
             cnx.commit()
             print("No updates: {}".format(insert_pass.rowcount))
             print("Id of last updated: {}".format(update))
+            db_action = 2
         else:
             print("No changes.")
+            db_action = 3
 
     except mysql.connector.IntegrityError as e:
         if e.errno == mysql.connector.errorcode.ER_DUP_ENTRY:
@@ -108,59 +160,69 @@ def insert_into_db(orb):
             pass
     except mysql.connector.Error as err:
         print("mysql connect failed with: {}".format(err))
-    finally:
+    else:
         cnx.close()
+    return db_action
+
+
+def parse_kml_file():
+    kml_file_path = '/tmp'
+    kml_files = ['./S1A_acquisition_plan_norwAOI.kml',
+                 './S1B_acquisition_plan_norwAOI.kml']
+
+    all_passes = {}
+    for kml_file in kml_files:
+        _kml_file = os.path.join(kml_file_path, kml_file)
+        if not os.path.exists(_kml_file):
+            continue
+        tree = etree.parse(_kml_file)
+
+        root = tree.getroot()
+
+        nsmap = root.nsmap[None]
+        find_prefix = './/{' + nsmap + '}'
+
+        for pm in tree.findall(find_prefix + 'Placemark'):
+            e_data = pm.find(find_prefix + 'ExtendedData')
+            reg = {}
+            for attr in ['SatelliteId', 'DatatakeId', 'Mode', 'Swath', 'Polarisation', 'ObservationTimeStart',
+                         'ObservationTimeStop', 'ObservationDuration', 'OrbitAbsolute', 'OrbitRelative']:
+                it_data = e_data.find(find_prefix + "Data[@name='{}']".format(attr))
+                v = it_data.find(find_prefix + "value")
+                value = v.text
+                if 'ObservationTime' in attr:
+                    value = datetime.strptime(value, '%Y-%m-%dT%H:%M:%S')
+                reg[attr] = value
+            if reg['SatelliteId'] not in all_passes:
+                all_passes[reg['SatelliteId']] = {}
+
+            if reg['OrbitAbsolute'] not in all_passes[reg['SatelliteId']]:
+                all_passes[reg['SatelliteId']][reg['OrbitAbsolute']] = []
+
+            all_passes[reg['SatelliteId']][reg['OrbitAbsolute']].append(reg)
+
+    now = datetime.now()
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    tomorrow = midnight + timedelta(days=1)
+    the_day_after_tomorrow = tomorrow + timedelta(days=1)
+    for satid in all_passes:
+        for orbit in sorted(all_passes[satid]):
+            added = False
+            for orb in all_passes[satid][orbit]:
+                aos = orb['ObservationTimeStart']
+                los = orb['ObservationTimeStop']
+                if (aos >= midnight and los < the_day_after_tomorrow):
+                    print("Start {}, end {}, Mode {}, pol {}, sat {}".format(orb['ObservationTimeStart'],
+                                                                             orb['ObservationTimeStop'],
+                                                                             orb['Mode'],
+                                                                             orb['Polarisation'],
+                                                                             orb['SatelliteId']))
+                    if insert_into_db(orb):
+                        added = True
+            if added:
+                print("-------------------------------")
     return 1
 
 
-kml_files = ['./S1A_acquisition_plan_norwAOI.kml',
-             './S1B_acquisition_plan_norwAOI.kml']
-
-all_passes = {}
-for kml_file in kml_files:
-    tree = etree.parse(kml_file)
-
-    root = tree.getroot()
-
-    nsmap = root.nsmap[None]
-    find_prefix = './/{' + nsmap + '}'
-
-    for pm in tree.findall(find_prefix + 'Placemark'):
-        e_data = pm.find(find_prefix + 'ExtendedData')
-        reg = {}
-        for attr in ['SatelliteId', 'DatatakeId', 'Mode', 'Swath', 'Polarisation', 'ObservationTimeStart',
-                     'ObservationTimeStop', 'ObservationDuration', 'OrbitAbsolute', 'OrbitRelative']:
-            it_data = e_data.find(find_prefix + "Data[@name='{}']".format(attr))
-            v = it_data.find(find_prefix + "value")
-            value = v.text
-            if 'ObservationTime' in attr:
-                value = datetime.strptime(value, '%Y-%m-%dT%H:%M:%S')
-            reg[attr] = value
-        if reg['SatelliteId'] not in all_passes:
-            all_passes[reg['SatelliteId']] = {}
-
-        if reg['OrbitAbsolute'] not in all_passes[reg['SatelliteId']]:
-            all_passes[reg['SatelliteId']][reg['OrbitAbsolute']] = []
-
-        all_passes[reg['SatelliteId']][reg['OrbitAbsolute']].append(reg)
-
-now = datetime.now()
-midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
-tomorrow = midnight + timedelta(days=1)
-the_day_after_tomorrow = tomorrow + timedelta(days=1)
-for satid in all_passes:
-    for orbit in sorted(all_passes[satid]):
-        added = False
-        for orb in all_passes[satid][orbit]:
-            aos = orb['ObservationTimeStart']
-            los = orb['ObservationTimeStop']
-            if (aos >= midnight and los < the_day_after_tomorrow):
-                print("Start {}, end {}, Mode {}, pol {}, sat {}".format(orb['ObservationTimeStart'],
-                                                                         orb['ObservationTimeStop'],
-                                                                         orb['Mode'],
-                                                                         orb['Polarisation'],
-                                                                         orb['SatelliteId']))
-                if insert_into_db(orb):
-                    added = True
-        if added:
-            print("-------------------------------")
+if __name__ == "__main__":
+    parse_kml_file()
